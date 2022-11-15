@@ -1,0 +1,1 @@
+set MONGODB_URI to your mongodb uri lmao
