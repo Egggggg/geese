@@ -1,9 +1,17 @@
-mod hex;
+mod forms;
+mod hexcolor;
 mod models;
 
-use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
+#[macro_use]
+extern crate rocket;
+
 use lazy_static::lazy_static;
-use mongodb::{bson::doc, Client, Collection};
+use mongodb::{bson::doc, Collection};
+use rocket::{
+    http::{ContentType, Status},
+    response::content,
+};
+use rocket_db_pools::{Connection, Database};
 use tera::{Context, Tera};
 
 use crate::models::Goose;
@@ -26,9 +34,15 @@ lazy_static! {
     };
 }
 
-#[get("/goose/{slug}")]
-async fn get_goose(client: web::Data<Client>, slug: web::Path<String>) -> impl Responder {
-    let slug = slug.into_inner();
+#[derive(Database)]
+#[database("geese")]
+pub struct GeeseDbConn(mongodb::Client);
+
+#[get("/goose/<slug>")]
+async fn get_goose(
+    client: Connection<GeeseDbConn>,
+    slug: &str,
+) -> Result<(ContentType, String), Status> {
     let collection: Collection<Goose> = client.database(DB_NAME).collection(COLL_NAME);
 
     match collection.find_one(doc! { "slug": &slug }, None).await {
@@ -37,30 +51,23 @@ async fn get_goose(client: web::Data<Client>, slug: web::Path<String>) -> impl R
             context.insert("goose", &goose);
 
             match TEMPLATES.render("goose.html", &context) {
-                Ok(rendered) => HttpResponse::Ok().body(rendered),
+                Ok(rendered) => Ok((ContentType::HTML, rendered)),
                 Err(err) => {
                     eprintln!("{}", err);
-                    HttpResponse::InternalServerError().body("Templating failed")
+                    Err(Status::InternalServerError)
                 }
             }
         }
-        Ok(None) => HttpResponse::NotFound().body(format!("No goose with slug {slug}")),
-        Err(err) => HttpResponse::InternalServerError().body(err.to_string()),
+        Ok(None) => Err(Status::NotFound),
+        Err(err) => {
+            eprintln!("{}", err);
+            Err(Status::InternalServerError)
+        }
     }
 }
-
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    let uri = std::env::var("MONGODB_URI").unwrap();
-
-    let client = Client::with_uri_str(uri).await.expect("failed to connect");
-
-    HttpServer::new(move || {
-        App::new()
-            .app_data(web::Data::new(client.clone()))
-            .service(get_goose)
-    })
-    .bind("127.0.0.1:8080")?
-    .run()
-    .await
+#[launch]
+fn rocket() -> _ {
+    rocket::build()
+        .attach(GeeseDbConn::init())
+        .mount("/", routes![get_goose])
 }
