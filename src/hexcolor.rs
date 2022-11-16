@@ -63,6 +63,16 @@ impl<'a> FromFormField<'a> for HexColor {
     }
 
     fn default() -> Option<HexColor> {
-        Some(Self(String::new()))
+        Some(Self("#4c4c4c".to_owned()))
+    }
+}
+
+impl HexColor {
+    pub fn to_inner(self) -> String {
+        self.0
+    }
+
+    pub fn inner(&self) -> &str {
+        &self.0
     }
 }

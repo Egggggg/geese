@@ -5,25 +5,26 @@ mod models;
 #[macro_use]
 extern crate rocket;
 
+use std::io;
+
 use lazy_static::lazy_static;
 use mongodb::{bson::doc, Collection};
-use rand::{distributions::Alphanumeric, random, thread_rng, Rng};
+use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use rocket::{
     form::Form,
     fs::NamedFile,
-    futures::io::BufReader,
     http::{ContentType, Status},
-    response::Redirect,
+    response::stream::{Event, EventStream},
 };
 use rocket_db_pools::{Connection, Database};
-use std::path::Path;
 use tera::{Context, Tera};
 
 use crate::models::Goose;
 
 const DB_NAME: &str = "geese";
 const COLL_NAME: &str = "geese";
-const TEMP_DIR: String = "/geese/temp/".to_owned();
+const CLOUDINARY_URL: &str =
+    "https://res.cloudinary.com/beesbeesbees/image/upload/w_512,h_512/geese/";
 
 lazy_static! {
     pub static ref TEMPLATES: Tera = {
@@ -77,11 +78,16 @@ async fn get_goose(
     }
 }
 
+#[get("/hatchery")]
+async fn hatchery() -> io::Result<NamedFile> {
+    NamedFile::open("/home/bee/dev/geese/assets/static/upload.html").await
+}
+
 #[post("/goose", data = "<input>")]
 async fn create_goose(
     client: Connection<GeeseDbConn>,
-    input: Form<forms::Creation<'_>>,
-) -> Result<Either<Redirect, (ContentType, String)>, (Status, &str)> {
+    input: Form<forms::Creation>,
+) -> Result<EventStream![], (Status, &'static str)> {
     // sluggify name
     // convert spaces into hyphens, then keep only hyphens and alphanumeric characters
     let mut slug: String = input
@@ -92,16 +98,15 @@ async fn create_goose(
         .filter(|c| c == &'-' || c.is_ascii_alphanumeric())
         .collect();
 
-    let mut rng = thread_rng();
-
     if slug.len() == 0 {
-        slug = String::from_utf8(rng.sample_iter(&Alphanumeric).take(5).collect()).map_err(|e| {
-            eprintln!("Error while creating slug: {e}");
-            (
-                Status::InternalServerError,
-                "Please wait a few moments and try again",
-            )
-        })?
+        slug = String::from_utf8(thread_rng().sample_iter(&Alphanumeric).take(5).collect())
+            .map_err(|e| {
+                eprintln!("Error while creating slug: {e}");
+                (
+                    Status::InternalServerError,
+                    "Please wait a few moments and try again",
+                )
+            })?
     }
 
     // get db collection with the geese
@@ -109,19 +114,18 @@ async fn create_goose(
 
     'outer: for _ in 0..5 {
         match collection.find_one(doc! { "slug": &slug }, None).await {
-            Ok(Some(goose)) => {
+            Ok(Some(_)) => {
                 // theres already a goose with this slug, get ready to retry
                 // generate a random alphanumeric character to append to slug
-                let chosen: String = String::from_utf8(
-                    rng.sample_iter(&Alphanumeric).take(1).collect(),
-                )
-                .map_err(|e| {
-                    eprintln!("Error while extending slug: {e}");
-                    (
-                        Status::InternalServerError,
-                        "Please wait a few moments and try again",
-                    )
-                })?;
+                let chosen: String =
+                    String::from_utf8(thread_rng().sample_iter(&Alphanumeric).take(1).collect())
+                        .map_err(|e| {
+                            eprintln!("Error while extending slug: {e}");
+                            (
+                                Status::InternalServerError,
+                                "Please wait a few moments and try again",
+                            )
+                        })?;
 
                 // extend slug, so it's different next time
                 slug += &chosen;
@@ -130,32 +134,40 @@ async fn create_goose(
             }
             Ok(None) => {
                 // there is no goose with this slug, use it
-                // try to get the path to the temp file
-                // if it's not fully in the filesystem, this returns None, so move it into the filesystem and set path ot that path
-                let path = match input.image.path() {
-                    Some(path) => path,
-                    None => {
-                        let path = TEMP_DIR + &slug;
+                // return a single use event stream to tell the user which slug to use
+                return Ok(EventStream! {
+                    // send the slug
+                    yield Event::data(slug.clone());
 
-                        // move the temp file from memory to an actual file so we can open it
-                        input.image.persist_to(path).await.map_err(|e| {
-                            eprintln!("Error while persisting {path}: {e}");
-                            (
-                                Status::InternalServerError,
-                                "Encountered an error while persisting upload",
-                            )
-                        })?;
+                    // url of uploaded goose
+                    let image = CLOUDINARY_URL.to_owned() + &slug;
 
-                        Path::new(&path)
+                    // put the goose in the database
+                    let goose = Goose {
+                        name: (&input.name).to_owned(),
+                        description: (&input.description).to_owned(),
+                        color: input.color.inner().to_owned(),
+                        slug,
+                        likes: 0,
+                        image,
+                    };
+
+                    match collection.insert_one(goose, None).await {
+                        Ok(_) => yield Event::data("created"),
+                        Err(e) => {
+                            eprintln!("Error creating goose: {e}");
+
+                            yield Event::data("failed")
+                        }
                     }
-                };
-
-                let goose = Goose {
-                    name: input.name,
-                    description: input.description,
-                    color,
-                    slug,
-                };
+                });
+            }
+            Err(e) => {
+                eprintln!("Error finding document with slug {slug}: {e}");
+                return Err((
+                    Status::InternalServerError,
+                    "Please wait a few moments and try again",
+                ));
             }
         }
     }
@@ -169,5 +181,5 @@ async fn create_goose(
 fn rocket() -> _ {
     rocket::build()
         .attach(GeeseDbConn::init())
-        .mount("/", routes![get_goose])
+        .mount("/", routes![get_goose, create_goose, hatchery])
 }
