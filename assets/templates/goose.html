@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta http-equiv="X-UA-Compatible" content="IE=edge">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+	<meta context="Geese" property="og:site_name">
+	<meta content="{{ goose.name }}" property="og:title">
+	<meta content="{{ goose.color }}" property="theme-color">
+	<meta contet="{{ goose.description }}" property="og:description">
+	<meta content="{{ goose.image }}" property="og:image">
+	<meta name="twitter:card" content="summary_large_image">
+	<title>{{ goose.name }}</title>
+	<style>
+		body {
+			width: 75%;
+			display: grid;
+			grid-template-columns: 100px 75%;
+			gap: 0.25em;
+		}
+
+		span {
+			text-align: right;
+		}
+
+		#color {
+			display: inline-block;
+			width: 1em;
+			height: 1em;
+			border-radius: 50%;
+
+			background-color: {{ goose.color }};
+		}
+
+		img {
+			max-width: max(256px, min(50%, 512px));
+		}
+	</style>
+</head>
+
+<body>
+	<span>Slug: </span>
+	<div>
+		<a href="/goose/{{ goose.slug }}">{{ goose.slug }}</a>
+	</div>
+	<span>Name: </span>
+	{{ goose.name }}
+	<span>Description: </span>
+	{{ goose.description }}
+	<span>Color: </span>
+	<div>
+		<span id="color"></span>
+		{{ goose.color }}
+	</div>
+	<span>Image: </span>
+	<div>
+		<a href="{{ goose.image }}">{{ goose.image }}</a> 
+	</div>
+	<span><!-- spacer --></span>
+	<img src="{{ goose.image }}">
+</body>
+
+</html>
