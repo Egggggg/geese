@@ -1,6 +1,6 @@
 use rocket::fs::TempFile;
 
-use crate::hexcolor::HexColor;
+use super::hexcolor::HexColor;
 
 #[derive(FromForm)]
 pub struct Creation<'a> {

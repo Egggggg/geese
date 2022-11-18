@@ -7,14 +7,18 @@ use reqwest::multipart::Part;
 use rocket::http::Status;
 use sha1::{Digest, Sha1};
 
-use crate::{CLOUDINARY_KEY, CLOUDINARY_PREFIX, CLOUDINARY_SECRET, CLOUDINARY_UPLOAD};
+use crate::CloudinaryUploadConfig;
 
-pub async fn upload(path: &Path, slug: &str) -> Result<(), (Status, &'static str)> {
-    let public_id = CLOUDINARY_PREFIX.to_string() + &slug;
+pub async fn upload(
+    cloudinary: &CloudinaryUploadConfig<'_>,
+    path: &Path,
+    slug: &str,
+) -> Result<(), (Status, &'static str)> {
+    let public_id = cloudinary.prefix.to_string() + &slug;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| {
-            eprintln!("Time machine don't work: {e}");
+            eprintln!("Time machine broke: {e}");
 
             (
                 Status::InternalServerError,
@@ -25,7 +29,7 @@ pub async fn upload(path: &Path, slug: &str) -> Result<(), (Status, &'static str
         .to_string();
 
     let signature =
-        "public_id=".to_owned() + &public_id + "&timestamp=" + &timestamp + &CLOUDINARY_SECRET;
+        "public_id=".to_owned() + &public_id + "&timestamp=" + &timestamp + &cloudinary.secret;
 
     println!("{}", signature);
 
@@ -44,7 +48,7 @@ pub async fn upload(path: &Path, slug: &str) -> Result<(), (Status, &'static str
     })?;
 
     let form = reqwest::multipart::Form::new()
-        .text("api_key", CLOUDINARY_KEY.as_str())
+        .text("api_key", cloudinary.key.to_string())
         .text("timestamp", timestamp)
         .text("signature", signature)
         .text("public_id", public_id)
@@ -52,7 +56,7 @@ pub async fn upload(path: &Path, slug: &str) -> Result<(), (Status, &'static str
 
     let client = reqwest::Client::new();
     let res = client
-        .post(CLOUDINARY_UPLOAD)
+        .post(cloudinary.upload_url.to_string())
         .multipart(form)
         .send()
         .await
@@ -65,7 +69,16 @@ pub async fn upload(path: &Path, slug: &str) -> Result<(), (Status, &'static str
             )
         })?;
 
-    println!("{:#?}", res);
+    println!("res: {:#?}", res);
+
+    res.error_for_status().map_err(|e| {
+        eprintln!("Error uploading to cloudinary: {e}");
+
+        (
+            Status::InternalServerError,
+            "Failed to upload goose image. Please try again in a few moments",
+        )
+    })?;
 
     Ok(())
 }

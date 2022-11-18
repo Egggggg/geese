@@ -1,31 +1,38 @@
 mod cloudinary;
-mod forms;
-mod hexcolor;
-mod models;
+mod routes;
+mod structures;
 
 #[macro_use]
 extern crate rocket;
 
+use std::borrow::Cow;
+
 use lazy_static::lazy_static;
 use mongodb::{bson::doc, Collection};
-use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use rocket::{
-    form::Form,
     fs::{relative, FileServer},
     http::{ContentType, Status},
-    response::Redirect,
 };
 use rocket_db_pools::{Connection, Database};
 use tera::{Context, Tera};
 
-use crate::models::Goose;
+use crate::routes::{create_goose, list_geese};
+use crate::structures::models::Goose;
 
 const COLL_NAME: &str = "geese";
 const TEMP_DIR: &str = "/tmp/";
 
-// change these if you're reusing this
-const CLOUDINARY_URL: &str = "https://res.cloudinary.com/beesbeesbees/image/upload/geese/";
-const CLOUDINARY_UPLOAD: &str = "https://api.cloudinary.com/v1_1/beesbeesbees/image/upload/";
+#[derive(Clone, Debug)]
+pub struct CloudinaryUploadConfig<'a> {
+    key: Cow<'a, str>,
+    secret: Cow<'a, str>,
+    prefix: Cow<'a, str>,
+    upload_url: Cow<'a, str>,
+    fetch_url: Cow<'a, str>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CloudinaryFetchUrl<'a>(Cow<'a, str>);
 
 lazy_static! {
     pub static ref TEMPLATES: Tera = {
@@ -38,20 +45,11 @@ lazy_static! {
         }
     };
     pub static ref DB_NAME: String = std::env::var("DB_NAME").unwrap();
-    pub static ref CLOUDINARY_KEY: String = std::env::var("CLOUDINARY_KEY").unwrap();
-    pub static ref CLOUDINARY_SECRET: String = std::env::var("CLOUDINARY_SECRET").unwrap();
-    pub static ref CLOUDINARY_PREFIX: String = std::env::var("CLOUDINARY_PREFIX").unwrap();
 }
 
 #[derive(Database)]
 #[database("geese")]
 pub struct GeeseDbConn(mongodb::Client);
-
-#[derive(Responder)]
-pub enum Either<L, R> {
-    Left(L),
-    Right(R),
-}
 
 #[get("/goose/<slug>")]
 async fn get_goose(
@@ -81,130 +79,34 @@ async fn get_goose(
     }
 }
 
-#[post("/goose", data = "<input>")]
-async fn create_goose(
-    client: Connection<GeeseDbConn>,
-    mut input: Form<forms::Creation<'_>>,
-) -> Result<Either<Redirect, (ContentType, String)>, (Status, &'static str)> {
-    // sluggify name
-    // convert spaces into hyphens, then keep only hyphens and alphanumeric characters
-    let mut slug: String = input
-        .name
-        .clone()
-        .chars()
-        .map(|c| if c == ' ' { '-' } else { c })
-        .filter(|c| c == &'-' || c.is_ascii_alphanumeric())
-        .collect();
-
-    if slug.len() == 0 {
-        slug = String::from_utf8(thread_rng().sample_iter(&Alphanumeric).take(5).collect())
-            .map_err(|e| {
-                eprintln!("Error while creating slug: {e}");
-                (
-                    Status::InternalServerError,
-                    "Please wait a few moments and try again",
-                )
-            })?
-    }
-
-    // get db collection with the geese
-    let collection: Collection<Goose> = client.database(&DB_NAME).collection(COLL_NAME);
-
-    'outer: for _ in 0..5 {
-        match collection.find_one(doc! { "slug": &slug }, None).await {
-            Ok(Some(_)) => {
-                // theres already a goose with this slug, get ready to retry
-                // generate a random alphanumeric character to append to slug
-                let chosen: String =
-                    String::from_utf8(thread_rng().sample_iter(&Alphanumeric).take(1).collect())
-                        .map_err(|e| {
-                            eprintln!("Error while extending slug: {e}");
-                            (
-                                Status::InternalServerError,
-                                "Please wait a few moments and try again",
-                            )
-                        })?;
-
-                // extend slug, so it's different next time
-                slug += &chosen;
-
-                continue 'outer;
-            }
-            Ok(None) => {
-                // there is no goose with this slug, use it
-                // return a single use event stream to tell the user which slug to use
-                // try to get the path to the temp file
-                // if it's not fully in the filesystem, this returns None, so move it into the filesystem and set path to that path
-                let (path, persisted) = match input.image.path() {
-                    Some(path) => (path, false),
-                    None => {
-                        let path = TEMP_DIR.to_owned() + &slug;
-
-                        // move the temp file from memory to an actual file so we can open it
-                        input.image.persist_to(&path).await.map_err(|e| {
-                            eprintln!("Error while persisting {path}: {e}");
-                            (
-                                Status::InternalServerError,
-                                "Encountered an error while persisting upload",
-                            )
-                        })?;
-
-                        (input.image.path().unwrap(), true)
-                    }
-                };
-
-                cloudinary::upload(path, &slug).await?;
-
-                if persisted {
-                    tokio::fs::remove_file(path).await.unwrap_or_default();
-                }
-
-                // url of uploaded goose
-                let image = CLOUDINARY_URL.to_owned() + &slug;
-
-                // put the goose in the database
-                let goose = Goose {
-                    name: (&input.name).to_owned(),
-                    description: (&input.description).to_owned(),
-                    color: input.color.inner().to_owned(),
-                    slug: slug.clone(),
-                    likes: 0,
-                    image,
-                };
-
-                return match collection.insert_one(goose, None).await {
-                    Ok(_) => Ok(Either::Left(Redirect::to(uri!(get_goose(slug))))),
-                    Err(e) => {
-                        eprintln!("Error creating goose: {e}");
-
-                        Err((
-                            Status::InternalServerError,
-                            "We couldn't create your goose :(",
-                        ))
-                    }
-                };
-            }
-            Err(e) => {
-                eprintln!("Error finding document with slug {slug}: {e}");
-                return Err((
-                    Status::InternalServerError,
-                    "Please wait a few moments and try again",
-                ));
-            }
-        }
-    }
-
-    // failed to get a valid slug in 5 attempts
-    eprintln!("No valid slugs were derived from {slug}");
-    Err((Status::InternalServerError, "Failed to generate a slug"))
-}
-
 #[launch]
 fn rocket() -> _ {
     dotenv::dotenv().unwrap();
 
+    let key: Cow<str> = Cow::Owned(std::env::var("CLOUDINARY_KEY").unwrap());
+    let secret: Cow<str> = Cow::Owned(std::env::var("CLOUDINARY_SECRET").unwrap());
+    let prefix: Cow<str> = Cow::Owned(std::env::var("CLOUDINARY_PREFIX").unwrap());
+    let name = std::env::var("CLOUDINARY_NAME").unwrap();
+    let upload_url: Cow<str> = Cow::Owned(format!(
+        "https://api.cloudinary.com/v1_1/{name}/image/upload/"
+    ));
+    let fetch_url: Cow<str> = Cow::Owned(format!(
+        "https://res.cloudinary.com/{name}/image/upload/{prefix}/"
+    ));
+
+    let fetch_url_state = CloudinaryFetchUrl(Cow::from(fetch_url.to_string()));
+    let upload_config = CloudinaryUploadConfig {
+        key,
+        secret,
+        prefix,
+        upload_url,
+        fetch_url,
+    };
+
     rocket::build()
         .attach(GeeseDbConn::init())
+        .manage(upload_config)
+        .manage(fetch_url_state)
         .mount("/", routes![get_goose, create_goose])
         .mount("/", FileServer::from(relative!("static")))
 }

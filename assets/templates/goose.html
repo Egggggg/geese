@@ -8,7 +8,7 @@
 
 	<meta context="Geese" property="og:site_name">
 	<meta content="{{ goose.name }}" property="og:title">
-	<meta content="{{ goose.color }}" property="theme-color">
+	<meta content="#ffff00" property="theme-color">
 	<meta contet="{{ goose.description }}" property="og:description">
 	<meta content="{{ goose.image }}" property="og:image">
 	<meta name="twitter:card" content="summary_large_image">
@@ -23,15 +23,6 @@
 
 		span {
 			text-align: right;
-		}
-
-		#color {
-			display: inline-block;
-			width: 1em;
-			height: 1em;
-			border-radius: 50%;
-
-			background-color: {{ goose.color }};
 		}
 
 		img {
@@ -49,11 +40,6 @@
 	{{ goose.name }}
 	<span>Description: </span>
 	{{ goose.description }}
-	<span>Color: </span>
-	<div>
-		<span id="color"></span>
-		{{ goose.color }}
-	</div>
 	<span>Image: </span>
 	<div>
 		<a href="{{ goose.image }}">{{ goose.image }}</a> 
